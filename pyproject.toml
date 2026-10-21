@@ -1,0 +1,36 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "edge-engine"
+version = "2.0.0"
+description = "Open-source MT5 Strategy Tester replica — general-purpose C++ core + Python API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["backtesting", "trading", "metatrader", "quantitative-finance", "strategy-tester"]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-benchmark",
+    "MetaTrader5",
+    "numba",
+    "scipy",
+]
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+cmake.source-dir = "."
+wheel.packages = ["python/edge_engine"]
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "Release"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
