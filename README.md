@@ -8,7 +8,7 @@
 ## 📑 Table of Contents
 1. [Architecture & Design Philosophy](#1-architecture--design-philosophy)
 2. [Directory Structure](#2-directory-structure)
-3. [Installation & Build](#3-installation--build)
+3. [Installation & Quick Setup Guide](#3-installation--quick-setup-guide)
 4. [Downloading & Storing 100% Broker Data](#4-downloading--storing-100-broker-data)
 5. [Implementing Custom Strategies](#5-implementing-custom-strategies)
 6. [Simulation Modes (How to Choose the Right Mode)](#6-simulation-modes-how-to-choose-the-right-mode)
@@ -82,27 +82,145 @@ edge_engine/
 
 ---
 
-## 3. Installation & Build
+## 3. Installation & Quick Setup Guide
 
-### Requirements
-- **OS**: Windows 10/11 64-bit
-- **Compiler**: Visual Studio 2022 (MSVC C++17) with CMake
-- **Python**: 3.10 – 3.13 (64-bit)
+### 3.1 Prerequisites
 
-### Compiling and Installing
-Open PowerShell in the `edge_engine` directory:
+Before building EdgeEngine, ensure you have the following installed on your system:
 
-```powershell
-# Navigate to the edge_engine directory
-cd "c:\Users\Ethan\Desktop\projects\new leaf indicator\edge_engine"
+| Component | Minimum Version | Notes |
+| :--- | :--- | :--- |
+| **Python** | 3.10 – 3.13 (64-bit) | Standard CPython distribution recommended |
+| **CMake** | 3.18+ | Ensure `cmake` is added to your system `PATH` |
+| **C++17 Compiler** | MSVC (VS 2022) / GCC 9+ / Clang 10+ | Supports AVX2 vectorization instructions |
+| **Git** | 2.30+ | For cloning the repository and submodules |
 
-# Compile and install directly into your active Python environment
-pip install . --no-build-isolation --no-deps
+#### Compiler Details by Platform
+- **Windows**: Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (Community or Professional) with the **"Desktop development with C++"** workload selected, or the standalone **Visual Studio Build Tools**.
+- **Linux (Debian/Ubuntu)**:
+  ```bash
+  sudo apt update && sudo apt install -y build-essential cmake python3-dev
+  ```
+- **macOS**:
+  ```bash
+  xcode-select --install
+  brew install cmake
+  ```
+
+---
+
+### 3.2 Step-by-Step Setup
+
+#### Step 1: Clone the Repository
+```bash
+git clone https://github.com/dante-bills1/edge_lab.git
+cd edge_lab
 ```
 
-Verify the installation:
-```powershell
-python -c "import edge_tester as et, edge_engine as ee; print('EdgeEngine installed successfully!')"
+#### Step 2: Create and Activate a Virtual Environment
+It is recommended to build and run inside an isolated virtual environment:
+
+- **Windows (PowerShell)**:
+  ```powershell
+  python -m venv .venv
+  .\.venv\Scripts\Activate.ps1
+  ```
+- **Linux / macOS (Bash/Zsh)**:
+  ```bash
+  python3 -m venv .venv
+  source .venv/bin/activate
+  ```
+
+#### Step 3: Upgrade Pip & Install Build Toolchain
+EdgeEngine utilizes `scikit-build-core` and `pybind11` for high-performance C++ compilation:
+```bash
+python -m pip install --upgrade pip
+pip install "scikit-build-core>=0.9" "pybind11>=2.12"
+```
+
+#### Step 4: Build and Install EdgeEngine
+
+Choose one of the following install modes:
+
+- **Option A: Development / Editable Install (Recommended for research & iteration)**
+  Compiles the C++ extension in-place so edits to Python files are immediately reflected:
+  ```bash
+  pip install -e . --no-build-isolation
+  ```
+
+- **Option B: Full Install with Development & Testing Dependencies**
+  Installs `pytest`, `pandas`, `numpy`, and benchmarking suites:
+  ```bash
+  pip install -e ".[dev]" --no-build-isolation
+  ```
+
+- **Option C: Standard Production Build**
+  ```bash
+  pip install .
+  ```
+
+---
+
+### 3.3 Verification
+
+1. **Smoke Test the Python & C++ Extension Import**:
+   ```powershell
+   python -c "import edge_tester as et, edge_engine as ee; print('EdgeEngine C++ core and Python package loaded successfully!')"
+   ```
+
+2. **Run the Automated Test Suite**:
+   Execute the test suite to verify matching engine parity, accounting rules, and latency queues:
+   ```powershell
+   pytest tests/ -v
+   ```
+
+---
+
+### 3.4 60-Second Quick Start
+
+You can run an end-to-end backtest on synthetic or broker data in seconds:
+
+```python
+import numpy as np
+import pandas as pd
+import edge_tester as et
+
+# 1. Generate 1,000 synthetic bars for instant testing
+np.random.seed(42)
+n_bars = 1000
+close = 100.0 + np.cumsum(np.random.randn(n_bars) * 0.2)
+high = close + np.random.rand(n_bars) * 0.3
+low = close - np.random.rand(n_bars) * 0.3
+open_p = close + np.random.randn(n_bars) * 0.1
+
+df = pd.DataFrame({
+    "time": np.arange(n_bars, dtype=np.int64),
+    "open": open_p,
+    "high": high,
+    "low": low,
+    "close": close,
+    "tick_volume": np.full(n_bars, 100, dtype=np.int64),
+    "spread": np.full(n_bars, 10, dtype=np.int32),
+})
+
+# 2. Configure Instrument Specs and Tester
+spec = et.SymbolSpec()
+spec.point = 0.01
+spec.spread_val = 0.10
+
+cfg = et.TesterConfig()
+cfg.initial_deposit = 10_000.0
+cfg.leverage = 100.0
+cfg.tick_mode = et.TickMode.EVERY_TICK
+
+# 3. Instantiate Engine and Run Test
+tester = et.Tester(cfg, spec)
+results = tester.run_test(df)
+
+print("Backtest Complete!")
+print(f"Ending Balance: ${results['ending_balance']:,.2f}")
+print(f"Total Trades:   {results['total_trades']}")
+print(f"Profit Factor:  {results['profit_factor']:.2f}")
 ```
 
 ---
@@ -500,13 +618,12 @@ for rank, pass_res in enumerate(results[:3], start=1):
 
 ## 10. Test Suite & Verification
 
-The engine is validated by a 38-test test suite:
+The engine is validated by an automated test suite verifying matching engine mechanics, accounting integrity, and MT5 parity:
 
 ```powershell
-python -m pytest edge_engine/tests/ -v
+pytest tests/ -v
 ```
 
 ### Coverage
-- **Parity Tests (`test_parity.py`)**: Validates exact numerical parity against the Numba/Python implementation across trade counts, win rates, net profit, and all trade management exit methods (A, B, C, D).
-- **Advanced Feature Tests (`test_advanced_features.py`)**: Validates `OHLC_M1` 4-tick generation, transit delay slippage queues, `InteractiveTester` replay methods, and `StrategyOptimizer` Grid/Genetic passes.
-- **Accounting & Margin Integrity (`test_general_tester.py`)**: Tests margin calls, stop-out liquidations, Hedging vs. Netting, swap charges, and deal log integrity.
+- **Advanced Feature Tests (`tests/test_advanced_features.py`)**: Validates `OHLC_M1` 4-tick generation, transit delay slippage queues, `InteractiveTester` replay methods, and `StrategyOptimizer` Grid/Genetic optimization passes.
+- **Accounting & Margin Integrity (`tests/test_general_tester.py`)**: Tests margin calls, stop-out liquidations, Hedging vs. Netting, swap charges, historical price buffer queries, and deal log integrity.
