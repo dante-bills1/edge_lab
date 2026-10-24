@@ -235,7 +235,9 @@ public:
             book_->on_price_update(tick, current_bar_idx_);
             strategy_->OnTick();
             strategy_->OnBar();
+            book_->evaluate_bar_extremes(bars_[current_bar_idx_], sp, current_bar_idx_);
             if (cfg_.enable_swaps) _apply_swaps();
+            book_->mark_to_bar_close(bars_[current_bar_idx_], sp, current_bar_idx_);
             _record_bar_eob(sp);
             current_bar_idx_++;
             if (current_bar_idx_ >= n_bars_) is_done_ = true;
@@ -284,7 +286,9 @@ public:
             book_->on_price_update(tick, current_bar_idx_);
             strategy_->OnTick();
             strategy_->OnBar();
+            book_->evaluate_bar_extremes(bars_[current_bar_idx_], sp, current_bar_idx_);
             if (cfg_.enable_swaps) _apply_swaps();
+            book_->mark_to_bar_close(bars_[current_bar_idx_], sp, current_bar_idx_);
             _record_bar_eob(sp);
             current_bar_idx_++;
             if (current_bar_idx_ >= n_bars_) is_done_ = true;

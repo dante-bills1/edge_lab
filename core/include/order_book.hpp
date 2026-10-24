@@ -191,6 +191,68 @@ public:
         account_.update_state(active_positions_, symbol_);
     }
 
+    // Evaluate intrabar extremes (High / Low) for active positions in OPEN_PRICES mode
+    void evaluate_bar_extremes(const MqlRates& bar, double spread, int32_t bar_index) {
+        double ask_high = bar.high + spread;
+        double ask_low  = bar.low + spread;
+
+        for (auto it = active_positions_.begin(); it != active_positions_.end(); ) {
+            bool closed = false;
+            if (it->is_buy()) {
+                // Check SL first (conservative stop-first model)
+                if (it->sl > EPSILON_PRICE && bar.low <= it->sl) {
+                    double exit_p = (bar.open <= it->sl) ? bar.open : it->sl;
+                    _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
+                    closed = true;
+                } else if (it->tp > EPSILON_PRICE && bar.high >= it->tp) {
+                    double exit_p = (bar.open >= it->tp) ? bar.open : it->tp;
+                    _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
+                    closed = true;
+                }
+            } else {
+                // Sell position exit executed on Ask
+                if (it->sl > EPSILON_PRICE && ask_high >= it->sl) {
+                    double ask_open = bar.open + spread;
+                    double exit_p = (ask_open >= it->sl) ? ask_open : it->sl;
+                    _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
+                    closed = true;
+                } else if (it->tp > EPSILON_PRICE && ask_low <= it->tp) {
+                    double ask_open = bar.open + spread;
+                    double exit_p = (ask_open <= it->tp) ? ask_open : it->tp;
+                    _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
+                    closed = true;
+                }
+            }
+
+            if (!closed) {
+                // Update MFE / MAE with bar extremes
+                if (it->is_buy()) {
+                    it->highest_price = std::max(it->highest_price, bar.high);
+                    it->lowest_price  = std::min(it->lowest_price, bar.low);
+                    it->mfe = std::max(it->mfe, symbol_.price_pnl(it->highest_price - it->price_open, it->volume));
+                    it->mae = std::min(it->mae, symbol_.price_pnl(it->lowest_price - it->price_open, it->volume));
+                } else {
+                    it->lowest_price  = std::min(it->lowest_price, ask_low);
+                    it->highest_price = std::max(it->highest_price, ask_high);
+                    it->mfe = std::max(it->mfe, symbol_.price_pnl(it->price_open - it->lowest_price, it->volume));
+                    it->mae = std::min(it->mae, symbol_.price_pnl(it->price_open - it->highest_price, it->volume));
+                }
+                ++it;
+            }
+        }
+        account_.update_state(active_positions_, symbol_);
+    }
+
+    // Mark floating positions to bar close for accurate end-of-bar equity
+    void mark_to_bar_close(const MqlRates& bar, double spread, int32_t bar_index) {
+        current_tick_.bid = bar.close;
+        current_tick_.ask = bar.close + spread;
+        current_tick_.time = bar.time;
+        current_bar_index_ = bar_index;
+        _update_positions_pnl(bar_index);
+        account_.update_state(active_positions_, symbol_);
+    }
+
 private:
     // ----------------------------------------------------
     // Internal: Execute Instant Market Order
