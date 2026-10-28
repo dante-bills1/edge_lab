@@ -120,13 +120,16 @@ public:
         std::vector<MqlRates>                   bars_owned,
         const SymbolSpec&                       symbol,
         const TesterConfig&                     cfg,
-        std::vector<double>                     spread_series_owned = {}
+        std::vector<double>                     spread_series_owned = {},
+        std::vector<std::vector<MqlTick>>       real_ticks_owned = {}
     ) {
         bars_storage_ = std::move(bars_owned);
         spread_storage_ = std::move(spread_series_owned);
+        real_ticks_storage_ = std::move(real_ticks_owned);
         const double* ss_ptr = spread_storage_.empty() ? nullptr : spread_storage_.data();
+        const auto* rt_ptr = real_ticks_storage_.empty() ? nullptr : &real_ticks_storage_;
         return init(strategy, bars_storage_.data(), static_cast<int32_t>(bars_storage_.size()),
-                    symbol, cfg, ss_ptr, nullptr);
+                    symbol, cfg, ss_ptr, rt_ptr);
     }
 
     bool init(
@@ -197,9 +200,11 @@ public:
         }
 
         int64_t bar_duration_ms = TickGenerator::infer_bar_duration_ms(bars, n);
-        if (cfg.tick_mode == TickMode::EVERY_TICK || cfg.tick_mode == TickMode::OHLC_M1) {
+        if (cfg.tick_mode == TickMode::EVERY_TICK || cfg.tick_mode == TickMode::OHLC_M1 || cfg.tick_mode == TickMode::REAL_TICKS) {
             if (real_ticks && !real_ticks->empty()) {
                 tick_data_ptr_ = real_ticks;
+            } else if (cfg.tick_mode == TickMode::REAL_TICKS) {
+                throw std::runtime_error("TickMode::REAL_TICKS was specified, but no real tick data was provided.");
             } else {
                 synth_ticks_ = TickGenerator::generate_all(
                     bars, spread_series, n, sym_.spread_val,
@@ -539,6 +544,7 @@ private:
     TesterResult                            result_{};
     std::vector<MqlRates>                   bars_storage_;
     std::vector<double>                     spread_storage_;
+    std::vector<std::vector<MqlTick>>       real_ticks_storage_;
     int32_t                                 current_bar_idx_ = 0;
     int32_t                                 current_tick_in_bar_ = 0;
     int64_t                                 last_swap_day_ = -1;

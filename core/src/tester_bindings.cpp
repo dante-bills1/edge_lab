@@ -501,11 +501,61 @@ PYBIND11_MODULE(edge_tester, m) {
             return s->ctx.current_tick;
         });
 
+    // ---- Helper to group flat tick streams by candle bars ----
+    auto group_ticks_by_bars = [](
+        const MqlRates* bars,
+        int32_t n,
+        py::object tick_time_msc_obj,
+        py::object tick_bid_obj,
+        py::object tick_ask_obj,
+        py::object tick_last_obj,
+        py::object tick_volume_obj,
+        py::object tick_flags_obj
+    ) -> std::vector<std::vector<MqlTick>> {
+        std::vector<std::vector<MqlTick>> grouped(n);
+        if (tick_time_msc_obj.is_none() || tick_bid_obj.is_none() || tick_ask_obj.is_none() || n <= 0) {
+            return grouped;
+        }
+
+        auto t_msc = tick_time_msc_obj.cast<py::array_t<int64_t>>().unchecked<1>();
+        auto t_bid = tick_bid_obj.cast<py::array_t<double>>().unchecked<1>();
+        auto t_ask = tick_ask_obj.cast<py::array_t<double>>().unchecked<1>();
+
+        bool has_last  = !tick_last_obj.is_none();
+        bool has_vol   = !tick_volume_obj.is_none();
+        bool has_flags = !tick_flags_obj.is_none();
+
+        size_t n_ticks = t_msc.shape(0);
+        int32_t current_bar = 0;
+
+        for (size_t k = 0; k < n_ticks; ++k) {
+            int64_t tick_sec = t_msc(k) / 1000LL;
+            if (tick_sec < bars[0].time) continue;
+
+            while (current_bar + 1 < n && tick_sec >= bars[current_bar + 1].time) {
+                current_bar++;
+            }
+            if (current_bar >= n) break;
+
+            MqlTick tick{};
+            tick.time_msc = t_msc(k);
+            tick.time     = tick_sec;
+            tick.bid      = t_bid(k);
+            tick.ask      = t_ask(k);
+            tick.last     = has_last  ? tick_last_obj.cast<py::array_t<double>>().unchecked<1>()(k) : t_bid(k);
+            tick.volume   = has_vol   ? tick_volume_obj.cast<py::array_t<uint64_t>>().unchecked<1>()(k) : 0;
+            tick.flags    = has_flags ? tick_flags_obj.cast<py::array_t<uint32_t>>().unchecked<1>()(k) : 0x06;
+
+            grouped[current_bar].push_back(tick);
+        }
+        return grouped;
+    };
+
     // ---- Tester ----
     py::class_<Tester>(m, "Tester")
         .def(py::init<>())
         .def("run",
-            [](const Tester& tester,
+            [group_ticks_by_bars](const Tester& tester,
                Strategy* strategy,
                py::array_t<double>  open_a,
                py::array_t<double>  high_a,
@@ -516,7 +566,13 @@ PYBIND11_MODULE(edge_tester, m) {
                py::array_t<int32_t> spread_a,
                const SymbolSpec& sym,
                py::object cfg_obj,
-               py::object spread_series_obj) -> TesterResult
+               py::object spread_series_obj,
+               py::object tick_time_msc_obj,
+               py::object tick_bid_obj,
+               py::object tick_ask_obj,
+               py::object tick_last_obj,
+               py::object tick_volume_obj,
+               py::object tick_flags_obj) -> TesterResult
             {
                 TesterConfig cfg{};
                 if (!cfg_obj.is_none())
@@ -534,7 +590,19 @@ PYBIND11_MODULE(edge_tester, m) {
                     for (int32_t i = 0; i < n; ++i) ss_buf[i] = r(i);
                     ss_ptr = ss_buf.data();
                 }
-                return tester.run(strategy, bars.data(), n, sym, cfg, ss_ptr);
+
+                std::vector<std::vector<MqlTick>> real_ticks_grouped;
+                const std::vector<std::vector<MqlTick>>* real_ticks_ptr = nullptr;
+                if (!tick_time_msc_obj.is_none()) {
+                    real_ticks_grouped = group_ticks_by_bars(
+                        bars.data(), n,
+                        tick_time_msc_obj, tick_bid_obj, tick_ask_obj,
+                        tick_last_obj, tick_volume_obj, tick_flags_obj
+                    );
+                    real_ticks_ptr = &real_ticks_grouped;
+                }
+
+                return tester.run(strategy, bars.data(), n, sym, cfg, ss_ptr, real_ticks_ptr);
             },
             py::arg("strategy"),
             py::arg("open"), py::arg("high"), py::arg("low"), py::arg("close"),
@@ -542,6 +610,12 @@ PYBIND11_MODULE(edge_tester, m) {
             py::arg("symbol"),
             py::arg("cfg") = py::none(),
             py::arg("spread_series") = py::none(),
+            py::arg("tick_time_msc") = py::none(),
+            py::arg("tick_bid") = py::none(),
+            py::arg("tick_ask") = py::none(),
+            py::arg("tick_last") = py::none(),
+            py::arg("tick_volume") = py::none(),
+            py::arg("tick_flags") = py::none(),
             "Run a full backtest simulation for the given Strategy subclass.");
 
     // ---- InteractiveTester (Visual / Step-by-Step Replay Engine) ----
