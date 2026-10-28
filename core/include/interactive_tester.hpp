@@ -159,6 +159,8 @@ public:
 
         account_ = std::make_unique<Account>(acct_cfg);
         book_    = std::make_unique<OrderBook>(*account_, sym_);
+        book_->set_open_prices_mode(cfg.tick_mode == TickMode::OPEN_PRICES);
+        last_swap_day_ = -1;
 
         // Configure latency simulation
         OrderBook::LatencyConfig lat_cfg{};
@@ -490,12 +492,30 @@ public:
 
 private:
     void _apply_swaps() {
-        if (sym_.swap_mode == 0) return;
-        for (const auto& pos : book_->active_positions()) {
-            double swap_per_lot = pos.is_buy() ? sym_.swap_long : sym_.swap_short;
-            if (std::abs(swap_per_lot) < 1e-10) continue;
-            double swap_charge = swap_per_lot * pos.volume;
-            account_->apply_pnl(swap_charge);
+        if (!cfg_.enable_swaps || sym_.swap_mode == 0) return;
+        if (!bars_ || current_bar_idx_ >= n_bars_) return;
+
+        int64_t current_day = bars_[current_bar_idx_].time / 86400;
+        if (last_swap_day_ == -1) {
+            last_swap_day_ = current_day;
+            return;
+        }
+
+        if (current_day > last_swap_day_) {
+            // Day rollover occurred: charge swap for each calendar day passed
+            for (int64_t d = last_swap_day_ + 1; d <= current_day; ++d) {
+                // If swap_rollover3days is disabled (-1), it's a 24/7 continuous market (e.g. Deriv Synthetics, Crypto):
+                // 1x daily swap is charged every single day including Saturday and Sunday.
+                // If swap_rollover3days >= 0 (e.g. 3 for Wednesday in Forex): weekends have no swap, rollover day carries 3x.
+                double multiplier = 1.0;
+                if (sym_.swap_rollover3days >= 0) {
+                    int dow = static_cast<int>((d + 4) % 7);
+                    if (dow == 0 || dow == 6) continue; // No weekend swap for closed traditional markets
+                    if (dow == sym_.swap_rollover3days) multiplier = 3.0; // Triple swap day
+                }
+                book_->apply_swap(multiplier);
+            }
+            last_swap_day_ = current_day;
         }
     }
 
@@ -521,6 +541,7 @@ private:
     std::vector<double>                     spread_storage_;
     int32_t                                 current_bar_idx_ = 0;
     int32_t                                 current_tick_in_bar_ = 0;
+    int64_t                                 last_swap_day_ = -1;
     bool                                    is_done_ = false;
     bool                                    initialized_ = false;
 };

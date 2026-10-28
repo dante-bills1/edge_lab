@@ -39,6 +39,16 @@ def _eval_pass(
         if hasattr(spec, k):
             setattr(spec, k, v)
 
+    # Optional preparation hook for strategies that precalculate buffers
+    if hasattr(strat, "prepare"):
+        strat.prepare(
+            bars_dict["open"],
+            bars_dict["high"],
+            bars_dict["low"],
+            bars_dict["close"],
+            spec
+        )
+
     # Build config
     cfg = et.TesterConfig()
     for k, v in cfg_dict.items():
@@ -129,7 +139,9 @@ class StrategyOptimizer:
             "high": df["high"].to_numpy(np.float64),
             "low": df["low"].to_numpy(np.float64),
             "close": df["close"].to_numpy(np.float64),
-            "time": df["time"].to_numpy(np.int64) if "time" in df.columns else np.zeros(n, np.int64),
+            "time": (df["time"].astype("int64") // 10**9).to_numpy(np.int64)
+            if pd.api.types.is_datetime64_any_dtype(df["time"])
+            else df["time"].to_numpy(np.int64) if "time" in df.columns else np.zeros(n, np.int64),
             "volume": df["tick_volume"].to_numpy(np.int64) if "tick_volume" in df.columns else np.zeros(n, np.int64),
             "spread": df["spread"].to_numpy(np.int32) if "spread" in df.columns else np.zeros(n, np.int32),
         }

@@ -70,3 +70,26 @@ def make_symbol_spec(name: str, try_mt5: bool = False) -> Dict[str, Any]:
         except Exception:
             pass
     return spec
+
+
+def create_symbol_spec(name: str, try_mt5: bool = False):
+    """Instantiate and populate a C++ SymbolSpec object for the given instrument."""
+    import edge_tester as et
+    d = make_symbol_spec(name, try_mt5=try_mt5)
+    sym = et.SymbolSpec()
+    sym.name = name
+    sym.point = float(d.get("point", 0.01))
+    sym.digits = int(d.get("digits", 2))
+    sym.spread_val = float(d.get("spread_val", 0.0))
+    sym.trade_tick_size = float(d.get("trade_tick_size", 0.01))
+    sym.trade_tick_value = float(d.get("trade_tick_value", 0.01))
+    sym.volume_min = float(d.get("volume_min", 0.01))
+    sym.volume_max = float(d.get("volume_max", 100.0))
+    sym.volume_step = float(d.get("volume_step", 0.01))
+    sym.commission_per_lot = float(d.get("commission_per_lot", 0.0))
+    sym.trade_stops_level = float(d.get("trade_stops_level", 0.0))
+    sym.trade_freeze_level = float(d.get("trade_freeze_level", 0.0))
+    sym.swap_long = float(d.get("swap_long", 0.0))
+    sym.swap_short = float(d.get("swap_short", 0.0))
+    return sym
+

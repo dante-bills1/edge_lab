@@ -53,6 +53,25 @@ public:
     const LatencyConfig& latency_config() const { return latency_; }
     const std::vector<InFlightOrder>& in_flight_orders() const { return in_flight_orders_; }
 
+    void set_open_prices_mode(bool b) { is_open_prices_mode_ = b; }
+    bool is_open_prices_mode() const { return is_open_prices_mode_; }
+
+    // MT5 Rollover swap application
+    void apply_swap(double multiplier = 1.0) {
+        if (symbol_.swap_mode == 0 || std::abs(multiplier) < 1e-6) return;
+        for (auto& pos : active_positions_) {
+            double raw = pos.is_buy() ? symbol_.swap_long : symbol_.swap_short;
+            if (std::abs(raw) < 1e-12) continue;
+            double charge = 0.0;
+            if (symbol_.swap_mode == 1) { // Points
+                charge = (raw * symbol_.point / symbol_.trade_tick_size) * symbol_.trade_tick_value * pos.volume;
+            } else { // Money / Currency
+                charge = raw * pos.volume;
+            }
+            pos.swap += charge * multiplier;
+        }
+    }
+
     void set_transaction_callback(TransactionCallback cb) {
         on_transaction_ = cb;
     }
@@ -89,7 +108,8 @@ public:
 
         switch (req.action) {
             case TRADE_ACTION_DEAL: {
-                if (latency_.mode != LatencyMode::NONE) {
+                // MT5 explicitly discards execution delay in OPEN_PRICES testing mode
+                if (latency_.mode != LatencyMode::NONE && !is_open_prices_mode_) {
                     int64_t delay = _compute_delay_ms();
                     if (delay > 0) {
                         InFlightOrder ifo{};
@@ -195,28 +215,61 @@ public:
     void evaluate_bar_extremes(const MqlRates& bar, double spread, int32_t bar_index) {
         double ask_high = bar.high + spread;
         double ask_low  = bar.low + spread;
+        bool bull_bar = (bar.close >= bar.open);
 
         for (auto it = active_positions_.begin(); it != active_positions_.end(); ) {
             bool closed = false;
             if (it->is_buy()) {
-                // Check SL first (conservative stop-first model)
-                if (it->sl > EPSILON_PRICE && bar.low <= it->sl) {
+                bool sl_hit = (it->sl > EPSILON_PRICE && bar.low <= it->sl);
+                bool tp_hit = (it->tp > EPSILON_PRICE && bar.high >= it->tp);
+
+                if (sl_hit && tp_hit) {
+                    // Both SL and TP touched in same bar:
+                    // In MT5's wave model:
+                    // Bullish bar (dip then rally): Low came first -> SL triggered.
+                    // Bearish bar (spike then sell-off): High came first -> TP triggered.
+                    if (bull_bar) {
+                        double exit_p = (bar.open <= it->sl) ? bar.open : it->sl;
+                        _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
+                    } else {
+                        double exit_p = (bar.open >= it->tp) ? bar.open : it->tp;
+                        _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
+                    }
+                    closed = true;
+                } else if (sl_hit) {
                     double exit_p = (bar.open <= it->sl) ? bar.open : it->sl;
                     _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
                     closed = true;
-                } else if (it->tp > EPSILON_PRICE && bar.high >= it->tp) {
+                } else if (tp_hit) {
                     double exit_p = (bar.open >= it->tp) ? bar.open : it->tp;
                     _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
                     closed = true;
                 }
             } else {
                 // Sell position exit executed on Ask
-                if (it->sl > EPSILON_PRICE && ask_high >= it->sl) {
+                bool sl_hit = (it->sl > EPSILON_PRICE && ask_high >= it->sl);
+                bool tp_hit = (it->tp > EPSILON_PRICE && ask_low <= it->tp);
+
+                if (sl_hit && tp_hit) {
+                    // Both SL and TP touched in same bar for Sell:
+                    // Bearish bar (spike then drop): High/Ask peaked first -> SL triggered.
+                    // Bullish bar (dip then rally): Low/Ask dipped first -> TP triggered.
+                    if (!bull_bar) {
+                        double ask_open = bar.open + spread;
+                        double exit_p = (ask_open >= it->sl) ? ask_open : it->sl;
+                        _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
+                    } else {
+                        double ask_open = bar.open + spread;
+                        double exit_p = (ask_open <= it->tp) ? ask_open : it->tp;
+                        _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
+                    }
+                    closed = true;
+                } else if (sl_hit) {
                     double ask_open = bar.open + spread;
                     double exit_p = (ask_open >= it->sl) ? ask_open : it->sl;
                     _close_position_internal(it, exit_p, it->volume, DEAL_REASON_SL);
                     closed = true;
-                } else if (it->tp > EPSILON_PRICE && ask_low <= it->tp) {
+                } else if (tp_hit) {
                     double ask_open = bar.open + spread;
                     double exit_p = (ask_open <= it->tp) ? ask_open : it->tp;
                     _close_position_internal(it, exit_p, it->volume, DEAL_REASON_TP);
@@ -390,18 +443,36 @@ private:
                     if (req.tp > EPSILON_PRICE) it->tp = req.tp;
                 } else {
                     // Opposite direction: reduce or reverse
-                    if (vol < it->volume) {
+                    bool pos_was_buy = it->is_buy();
+                    double close_vol = std::min(it->volume, vol);
+                    double price_diff = pos_was_buy ? (fill_price - it->price_open) : (it->price_open - fill_price);
+                    double gross_profit = symbol_.price_pnl(price_diff, close_vol);
+                    double exit_comm = symbol_.commission_cost(close_vol) * 0.5;
+                    double realized_swap = (it->volume > EPSILON_PRICE) ? it->swap * (close_vol / it->volume) : 0.0;
+                    it->swap -= realized_swap;
+
+                    double net_realized = gross_profit - exit_comm + realized_swap;
+                    account_.apply_pnl(net_realized);
+
+                    deal.entry = (vol >= it->volume - EPSILON_PRICE) ? (vol > it->volume + EPSILON_PRICE ? DEAL_ENTRY_INOUT : DEAL_ENTRY_OUT) : DEAL_ENTRY_OUT;
+                    deal.profit = gross_profit - exit_comm;
+                    deal.swap = realized_swap;
+                    deal.commission += exit_comm;
+
+                    if (vol < it->volume - EPSILON_PRICE) {
                         it->volume -= vol;
-                    } else if (std::abs(vol - it->volume) < EPSILON_PRICE) {
+                    } else if (std::abs(vol - it->volume) <= EPSILON_PRICE) {
                         // Fully closed
                         active_positions_.erase(it);
                     } else {
-                        // Reversed
+                        // Reversed: remaining volume becomes new position in opposite direction
+                        double rem_vol = vol - it->volume;
                         it->type = is_buy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
-                        it->volume = vol - it->volume;
+                        it->volume = rem_vol;
                         it->price_open = fill_price;
                         it->sl = req.sl;
                         it->tp = req.tp;
+                        it->swap = 0.0;
                     }
                 }
             }
@@ -622,8 +693,17 @@ private:
     // ----------------------------------------------------
     void _evaluate_pending_orders(int32_t bar_index) {
         for (auto it = active_orders_.begin(); it != active_orders_.end(); ) {
-            // Expiration check
-            if (it->time_expiration > 0 && current_tick_.time >= it->time_expiration) {
+            // Expiration check: handle GTC, DAY, and SPECIFIED timestamps
+            bool expired = false;
+            if (it->time_type == ORDER_TIME_DAY) {
+                int64_t placed_day = it->time_setup / 86400;
+                int64_t current_day = current_tick_.time / 86400;
+                if (current_day > placed_day) expired = true;
+            } else if (it->time_expiration > 0 && current_tick_.time >= it->time_expiration) {
+                expired = true;
+            }
+
+            if (expired) {
                 it->state = ORDER_STATE_EXPIRED;
                 history_orders_.push_back(*it);
                 it = active_orders_.erase(it);
@@ -646,6 +726,42 @@ private:
             } else if (ot == ORDER_TYPE_SELL_STOP && current_tick_.bid <= it->price_open) {
                 triggered = true;
                 fill_price = current_tick_.bid;
+            } else if (ot == ORDER_TYPE_BUY_STOP_LIMIT && current_tick_.ask >= it->price_open) {
+                // MT5: Once stop price is reached, convert to pending Buy Limit at price_stoplimit
+                it->type = ORDER_TYPE_BUY_LIMIT;
+                it->price_open = it->price_stoplimit;
+                it->state = ORDER_STATE_PLACED;
+                if (on_transaction_) {
+                    MqlTradeTransaction trans{};
+                    trans.order       = it->ticket;
+                    trans.symbol      = it->symbol;
+                    trans.type        = TRADE_TRANSACTION_ORDER_UPDATE;
+                    trans.order_type  = it->type;
+                    trans.order_state = it->state;
+                    trans.price       = it->price_open;
+                    trans.volume      = it->volume_current;
+                    on_transaction_(trans);
+                }
+                ++it;
+                continue;
+            } else if (ot == ORDER_TYPE_SELL_STOP_LIMIT && current_tick_.bid <= it->price_open) {
+                // MT5: Once stop price is reached, convert to pending Sell Limit at price_stoplimit
+                it->type = ORDER_TYPE_SELL_LIMIT;
+                it->price_open = it->price_stoplimit;
+                it->state = ORDER_STATE_PLACED;
+                if (on_transaction_) {
+                    MqlTradeTransaction trans{};
+                    trans.order       = it->ticket;
+                    trans.symbol      = it->symbol;
+                    trans.type        = TRADE_TRANSACTION_ORDER_UPDATE;
+                    trans.order_type  = it->type;
+                    trans.order_state = it->state;
+                    trans.price       = it->price_open;
+                    trans.volume      = it->volume_current;
+                    on_transaction_(trans);
+                }
+                ++it;
+                continue;
             }
 
             if (triggered) {
@@ -736,6 +852,23 @@ private:
     // Internal: Stop-Out Execution
     // ----------------------------------------------------
     void _handle_stopout(int32_t bar_index) {
+        if (!account_.is_stopout() || active_positions_.empty()) return;
+
+        // MT5: Cancel and delete all pending orders on stopout trigger
+        for (auto& ord : active_orders_) {
+            ord.state = ORDER_STATE_CANCELED;
+            history_orders_.push_back(ord);
+            if (on_transaction_) {
+                MqlTradeTransaction trans{};
+                trans.order       = ord.ticket;
+                trans.symbol      = ord.symbol;
+                trans.type        = TRADE_TRANSACTION_ORDER_DELETE;
+                trans.order_state = ORDER_STATE_CANCELED;
+                on_transaction_(trans);
+            }
+        }
+        active_orders_.clear();
+
         while (account_.is_stopout() && !active_positions_.empty()) {
             account_.record_stopout();
 
@@ -798,6 +931,7 @@ private:
     uint64_t             rng_state_ = 42;
     std::vector<InFlightOrder> in_flight_orders_;
     int32_t              current_bar_index_ = 0;
+    bool                 is_open_prices_mode_ = false;
 };
 
 } // namespace edge

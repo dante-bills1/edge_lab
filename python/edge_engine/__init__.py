@@ -7,7 +7,7 @@ General-Purpose MetaTrader 5 Strategy Tester Replica (Python Interface).
 from __future__ import annotations
 
 import edge_tester as tester_api
-from .symbol_spec import make_symbol_spec
+from .symbol_spec import make_symbol_spec, create_symbol_spec
 from .optimizer import StrategyOptimizer
 
 # Expose core tester classes directly at edge_engine top level
@@ -21,6 +21,9 @@ TickMode = tester_api.TickMode
 LatencyMode = tester_api.LatencyMode
 OptimizationCriterion = tester_api.OptimizationCriterion
 OptimizationAlgorithm = tester_api.OptimizationAlgorithm
+
+INIT_SUCCEEDED = tester_api.INIT_SUCCEEDED
+INIT_FAILED = tester_api.INIT_FAILED
 
 __version__ = "2.0.0"
 __all__ = [
@@ -36,5 +39,8 @@ __all__ = [
     "OptimizationAlgorithm",
     "StrategyOptimizer",
     "make_symbol_spec",
+    "create_symbol_spec",
+    "INIT_SUCCEEDED",
+    "INIT_FAILED",
     "tester_api",
 ]

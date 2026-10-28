@@ -191,3 +191,53 @@ class TestAdvancedMT5Features:
         assert len(results) > 0
         assert "fitness" in results[0]
 
+    def test_latency_discarded_in_open_prices(self):
+        bars = _generate_test_bars(30)
+        spec = _make_spec()
+        cfg = et.TesterConfig()
+        cfg.tick_mode = et.TickMode.OPEN_PRICES
+        cfg.latency_mode = et.LatencyMode.FIXED
+        cfg.latency_fixed_ms = 5000  # Latency configured
+
+        tester = et.Tester()
+        strat = SimpleBuyerStrategy()
+        res = tester.run(
+            strat,
+            bars["open"], bars["high"], bars["low"], bars["close"],
+            bars["time"], bars["volume"], bars["spread"],
+            spec, cfg
+        )
+        # Latency should be discarded in open prices mode, trade executes immediately on bar 0
+        assert res.total_trades > 0
+        assert len(res.deals) >= 2
+
+    def test_swap_rollover_schedule(self):
+        # Generate bars spanning multiple days (every bar is 4 hours = 14400s)
+        n = 42 # 7 days
+        t0 = 1700006400 # 2023-11-15 00:00:00 (Wednesday!)
+        times = np.array([t0 + i * 14400 for i in range(n)], dtype=np.int64)
+        opens = np.full(n, 1000.0, dtype=np.float64)
+        highs = np.full(n, 1005.0, dtype=np.float64)
+        lows = np.full(n, 995.0, dtype=np.float64)
+        closes = np.full(n, 1000.0, dtype=np.float64)
+        vols = np.full(n, 100, dtype=np.int64)
+        spreads = np.full(n, 10, dtype=np.int32)
+
+        spec = _make_spec()
+        spec.swap_mode = 2 # currency mode
+        spec.swap_long = -10.0 # -$10/night
+        spec.swap_short = 5.0
+
+        cfg = et.TesterConfig()
+        cfg.enable_swaps = True
+        cfg.tick_mode = et.TickMode.OPEN_PRICES
+
+        tester = et.Tester()
+        strat = SimpleBuyerStrategy()
+        res = tester.run(strat, opens, highs, lows, closes, times, vols, spreads, spec, cfg)
+        assert res.total_trades > 0
+        # Position was held across days, should accumulate negative swap
+        deals = res.deals
+        exit_deal = deals[-1]
+        assert exit_deal.swap < 0.0, f"Expected negative swap, got {exit_deal.swap}"
+

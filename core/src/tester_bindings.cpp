@@ -216,7 +216,8 @@ PYBIND11_MODULE(edge_tester, m) {
         .def_readwrite("trade_freeze_level",   &SymbolSpec::trade_freeze_level)
         .def_readwrite("swap_long",            &SymbolSpec::swap_long)
         .def_readwrite("swap_short",           &SymbolSpec::swap_short)
-        .def_readwrite("swap_mode",            &SymbolSpec::swap_mode);
+        .def_readwrite("swap_mode",            &SymbolSpec::swap_mode)
+        .def_readwrite("swap_rollover3days",   &SymbolSpec::swap_rollover3days);
 
     // ---- TesterConfig ----
     py::class_<TesterConfig>(m, "TesterConfig")

@@ -138,6 +138,7 @@ struct SymbolSpec {
     double  swap_long;          // per lot per night (currency)
     double  swap_short;
     int32_t swap_mode;          // 0=off, 1=points, 2=money
+    int32_t swap_rollover3days = -1; // -1 = disabled (24/7 Deriv synthetics), 3 = Wednesday (Forex)
 
     // Convenience helpers
     double normalize_price(double price) const {
